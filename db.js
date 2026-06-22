@@ -2,38 +2,32 @@
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
-// Database configuration
-const dbConfig = {
+// Create connection pool
+const pool = mysql.createPool({
     host: process.env.DB_HOST || 'localhost',
     user: process.env.DB_USER || 'root',
-    password: process.env.DB_PASSWORD || '',
+    password: process.env.DB_PASSWORD || '', // Handle empty password
     database: process.env.DB_NAME || 'epitome_steel',
-    port: process.env.DB_PORT || 3306,
     waitForConnections: true,
-    connectionLimit: parseInt(process.env.DB_CONNECTION_LIMIT) || 10,
+    connectionLimit: 10,
     queueLimit: 0,
+    connectTimeout: 10000,
     enableKeepAlive: true,
-    keepAliveInitialDelay: 0,
-    multipleStatements: false,
-    timezone: '+05:30' // IST timezone
-};
+    keepAliveInitialDelay: 0
+});
 
-// Create connection pool
-const pool = mysql.createPool(dbConfig);
-
-// Test database connection
+// Test connection
 const testConnection = async () => {
-    let connection;
     try {
-        connection = await pool.getConnection();
+        const connection = await pool.getConnection();
         console.log('✅ MySQL Database connected successfully!');
-        console.log(`📊 Database: ${dbConfig.database}`);
-        console.log(`🔌 Host: ${dbConfig.host}:${dbConfig.port}`);
+        console.log(`📊 Database: ${process.env.DB_NAME || 'epitome_steel'}`);
+        console.log(`🔌 Host: ${process.env.DB_HOST || 'localhost'}`);
         
-        // Get server version
         const [rows] = await connection.query('SELECT VERSION() as version');
         console.log(`📦 MySQL Version: ${rows[0].version}`);
         
+        connection.release();
         return true;
     } catch (error) {
         console.error('❌ Database connection failed:', error.message);
@@ -42,61 +36,32 @@ const testConnection = async () => {
         console.error('   2. Database credentials in .env file');
         console.error('   3. Database name exists');
         return false;
-    } finally {
-        if (connection) connection.release();
     }
 };
 
-// Helper function to execute queries with error handling
+// Execute query
 const executeQuery = async (query, params = []) => {
-    let connection;
     try {
-        connection = await pool.getConnection();
-        const [rows, fields] = await connection.execute(query, params);
-        return rows;
+        const [results] = await pool.execute(query, params);
+        return results;
     } catch (error) {
         console.error('❌ Query execution failed:', error.message);
         console.error('📝 Query:', query);
         console.error('📝 Parameters:', params);
         throw error;
-    } finally {
-        if (connection) connection.release();
-    }
-};
-
-// Helper function for transactions
-const executeTransaction = async (callback) => {
-    let connection;
-    try {
-        connection = await pool.getConnection();
-        await connection.beginTransaction();
-        
-        const result = await callback(connection);
-        
-        await connection.commit();
-        return result;
-    } catch (error) {
-        if (connection) {
-            await connection.rollback();
-        }
-        console.error('❌ Transaction failed:', error.message);
-        throw error;
-    } finally {
-        if (connection) connection.release();
     }
 };
 
 // Get pool status
 const getPoolStatus = () => {
     return {
-        totalConnections: pool.pool._allConnections.length,
-        freeConnections: pool.pool._freeConnections.length,
-        queuedRequests: pool.pool._connectionQueue.length,
-        maxConnections: dbConfig.connectionLimit
+        totalConnections: pool.pool ? pool.pool._allConnections.length : 0,
+        freeConnections: pool.pool ? pool.pool._freeConnections.length : 0,
+        queueSize: pool.pool ? pool.pool._connectionQueue.length : 0,
     };
 };
 
-// Close all connections (for graceful shutdown)
+// Close pool
 const closePool = async () => {
     try {
         await pool.end();
@@ -106,13 +71,10 @@ const closePool = async () => {
     }
 };
 
-// Export functions
 module.exports = {
     pool,
     testConnection,
     executeQuery,
-    executeTransaction,
     getPoolStatus,
-    closePool,
-    dbConfig
+    closePool
 };

@@ -16,6 +16,13 @@ const {
     closePool 
 } = require('./db');
 
+// Import email service
+const { 
+    sendUserConfirmation, 
+    sendAdminNotification, 
+    verifyEmailConfig 
+} = require('./emailService');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -118,7 +125,7 @@ app.get('/api/db-status', async (req, res) => {
     }
 });
 
-// Contact form submission endpoint
+// Contact form submission endpoint with email notifications
 app.post('/api/contact', [
     body('full_name').trim().notEmpty().withMessage('Full name is required'),
     body('email').isEmail().withMessage('Valid email is required'),
@@ -135,9 +142,11 @@ app.post('/api/contact', [
         });
     }
 
-    const { full_name, company, email, phone, project_type, message } = req.body;
+    const formData = req.body;
+    const { full_name, company, email, phone, project_type, message } = formData;
 
     try {
+        // 1. Save to database
         const result = await executeQuery(
             `INSERT INTO contact_submissions 
             (full_name, company, email, phone, project_type, message) 
@@ -145,14 +154,34 @@ app.post('/api/contact', [
             [full_name, company || null, email, phone || null, project_type || 'PEB Building', message]
         );
 
+        console.log('✅ Contact saved to database with ID:', result.insertId);
+
+        // 2. Send confirmation email to user (customer)
+        try {
+            await sendUserConfirmation(formData);
+            console.log('✅ Thank you email sent to customer:', email);
+        } catch (emailError) {
+            console.error('❌ Failed to send customer email:', emailError.message);
+            // Don't fail the request if email fails
+        }
+
+        // 3. Send notification email to admin
+        try {
+            await sendAdminNotification(formData);
+            console.log('✅ Notification email sent to admin');
+        } catch (emailError) {
+            console.error('❌ Failed to send admin email:', emailError.message);
+            // Don't fail the request if email fails
+        }
+
         res.status(201).json({
             success: true,
-            message: 'Contact form submitted successfully',
+            message: 'Contact form submitted successfully. We\'ll be in touch soon!',
             id: result.insertId
         });
 
     } catch (error) {
-        console.error('Error saving contact submission:', error);
+        console.error('❌ Error saving contact submission:', error);
         res.status(500).json({
             error: 'Failed to submit contact form. Please try again.'
         });
@@ -211,7 +240,7 @@ app.post('/api/admin/login', [
         });
 
     } catch (error) {
-        console.error('Login error:', error);
+        console.error('❌ Login error:', error);
         res.status(500).json({ error: 'Login failed' });
     }
 });
@@ -245,7 +274,7 @@ app.get('/api/admin/submissions', authenticateToken, async (req, res) => {
         );
         res.json({ submissions });
     } catch (error) {
-        console.error('Error fetching submissions:', error);
+        console.error('❌ Error fetching submissions:', error);
         res.status(500).json({ error: 'Failed to fetch submissions' });
     }
 });
@@ -265,7 +294,7 @@ app.get('/api/admin/submissions/:id', authenticateToken, async (req, res) => {
         
         res.json({ submission: submissions[0] });
     } catch (error) {
-        console.error('Error fetching submission:', error);
+        console.error('❌ Error fetching submission:', error);
         res.status(500).json({ error: 'Failed to fetch submission' });
     }
 });
@@ -294,7 +323,7 @@ app.patch('/api/admin/submissions/:id/status', authenticateToken, [
 
         res.json({ success: true, message: 'Status updated successfully' });
     } catch (error) {
-        console.error('Error updating submission:', error);
+        console.error('❌ Error updating submission:', error);
         res.status(500).json({ error: 'Failed to update status' });
     }
 });
@@ -314,14 +343,14 @@ app.delete('/api/admin/submissions/:id', authenticateToken, async (req, res) => 
 
         res.json({ success: true, message: 'Submission deleted' });
     } catch (error) {
-        console.error('Error deleting submission:', error);
+        console.error('❌ Error deleting submission:', error);
         res.status(500).json({ error: 'Failed to delete submission' });
     }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-    console.error('Unhandled error:', err.stack);
+    console.error('❌ Unhandled error:', err.stack);
     res.status(500).json({ error: 'Something went wrong!' });
 });
 
@@ -334,20 +363,43 @@ process.on('SIGINT', async () => {
 
 // Start server
 const startServer = async () => {
+    console.log('\n🚀 Starting Epitome Steel Backend Server...');
+    console.log('📋 Environment:', process.env.NODE_ENV || 'development');
+    console.log(`🔌 Port: ${PORT}`);
+    
     // Test database connection first
     const dbConnected = await testConnection();
     
     if (!dbConnected) {
         console.log('⚠️  Server will start but database features may not work.');
         console.log('💡 Please fix database connection and restart the server.');
+    } else {
+        console.log('✅ Database connected successfully');
+    }
+
+    // Verify email configuration
+    try {
+        const emailVerified = await verifyEmailConfig();
+        if (emailVerified) {
+            console.log('✅ Email service configured successfully');
+            console.log(`   📧 Sending emails from: ${process.env.EMAIL_USER}`);
+            console.log(`   📧 Admin notifications to: ${process.env.ADMIN_EMAIL}`);
+        } else {
+            console.log('⚠️  Email service will not work. Please check your .env file');
+        }
+    } catch (error) {
+        console.log('⚠️  Email service error:', error.message);
+        console.log('💡 Please check your email configuration in .env file');
+        console.log('   For Gmail, use App Password: https://support.google.com/accounts/answer/185833');
     }
     
-    app.listen(PORT, () => {
-        console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+    // Start server with error handling for port in use
+    const server = app.listen(PORT, () => {
+        console.log(`\n✅ Server running on http://localhost:${PORT}`);
         console.log(`📋 Health check: http://localhost:${PORT}/api/health`);
         console.log(`📊 DB Status: http://localhost:${PORT}/api/db-status`);
         console.log(`\n📌 Available endpoints:`);
-        console.log(`   POST /api/contact - Submit contact form`);
+        console.log(`   POST /api/contact - Submit contact form (with email notifications)`);
         console.log(`   POST /api/admin/login - Admin login`);
         console.log(`   GET /api/admin/submissions - Get all submissions (admin)`);
         console.log(`   GET /api/admin/submissions/:id - Get single submission (admin)`);
@@ -355,7 +407,41 @@ const startServer = async () => {
         console.log(`   DELETE /api/admin/submissions/:id - Delete submission (admin)`);
         console.log(`\n🔒 Admin endpoints require JWT token`);
         console.log(`\n🌐 Allowed CORS origins:`, allowedOrigins.join(', '));
+        console.log(`\n📧 Email notifications:`);
+        console.log(`   ✅ Customer thank you emails enabled`);
+        console.log(`   ✅ Admin notification emails enabled`);
+        console.log(`   📧 From: ${process.env.EMAIL_USER || 'not set'}`);
+        console.log(`   📧 Admin: ${process.env.ADMIN_EMAIL || 'not set'}`);
+        console.log('\n✨ Server is ready to handle requests!\n');
+    });
+
+    // Handle server errors (like port in use)
+    server.on('error', (error) => {
+        if (error.code === 'EADDRINUSE') {
+            console.error(`\n❌ Port ${PORT} is already in use!`);
+            console.log(`💡 Try killing the process or use a different port:`);
+            console.log(`   netstat -ano | findstr :${PORT}`);
+            console.log(`   taskkill /PID <PID> /F`);
+            console.log(`   Or set PORT=5001 in your .env file\n`);
+            process.exit(1);
+        } else {
+            console.error('❌ Server error:', error);
+        }
     });
 };
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (error) => {
+    console.error('❌ Unhandled Rejection:', error);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    if (error.code === 'EADDRINUSE') {
+        console.log(`💡 Port ${PORT} is in use. Try killing the process or using a different port.`);
+    }
+    process.exit(1);
+});
 
 startServer();
